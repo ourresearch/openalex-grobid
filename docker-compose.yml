@@ -1,14 +1,23 @@
 services:
   grobid:
-    image: grobid/grobid:0.8.1
+    image: lfoppiano/grobid:0.8.1
     container_name: grobid
     ports:
       - "8070:8070"
+    platform: linux/amd64
+    environment:
+      - JAVA_OPTS="-XX:-UseContainerSupport"
+    deploy:
+      resources:
+        limits:
+          memory: 4G
 
   flask:
     build:
       context: .
       dockerfile: ./Dockerfile
+      platforms:
+        - linux/amd64
     container_name: flask
     ports:
       - "8080:8080"
@@ -16,8 +25,3 @@ services:
       - grobid
     env_file:
       - .env
-    environment:
-      GROBID_URL: "http://grobid:8070"
-      AWS_ACCESS_KEY_ID: "YOUR_KEY"
-      AWS_SECRET_ACCESS_KEY: "YOUR_SECRET"
-      AWS_DEFAULT_REGION: "us-east-1"
