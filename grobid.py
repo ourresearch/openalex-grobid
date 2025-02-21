@@ -10,8 +10,8 @@ import boto3
 from boto3.dynamodb.conditions import Key
 import requests
 
-PDF_BUCKET = os.getenv("PDF_BUCKET", "openalex-harvested-pdf")
-GROBID_XML_BUCKET = os.getenv("GROBID_XML_BUCKET", "openalex-grobid-xml")
+PDF_BUCKET = os.getenv("PDF_BUCKET", "openalex-harvested-pdfs")
+GROBID_XML_BUCKET = os.getenv("GROBID_XML_BUCKET", "openalex-harvested-grobid-xml")
 GROBID_URL = os.getenv("GROBID_URL", "http://grobid:8070")
 MAX_FILE_SIZE_IN_MB = 20
 
@@ -51,6 +51,12 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # create a new id and save the file
     xml_uuid = str(uuid.uuid4())
     xml_content = grobid_response.content.decode('utf-8')
+
+    # validate the xml content
+    if not xml_content:
+        return {"error": "GROBID response is empty."}
+
+    # save
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
     save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace)
     return {"id": xml_uuid}

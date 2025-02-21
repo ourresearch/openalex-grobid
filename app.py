@@ -10,15 +10,15 @@ app.json.sort_keys = False
 
 @app.route("/")
 def index():
-    grobid_status = check_grobid_health(GROBID_URL)
+    grobid_status = check_grobid_health()
     if grobid_status:
         return jsonify({"status": "grobid is alive"})
     else:
         return jsonify({"status": "grobid is dead :("}), 503
 
 
-@app.route("/parse-pdf", methods=["POST"])
-def parse_pdf():
+@app.route("/parse", methods=["POST"])
+def parse():
     # fetch and validate request body
     data = request.get_json()
     pdf_url = data.get("pdf_url")
@@ -33,6 +33,7 @@ def parse_pdf():
 
     # parse pdf
     response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
+    return jsonify(response)
 
 
 
