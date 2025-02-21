@@ -1,35 +1,40 @@
 import os
 
-from flask import Flask, jsonify
-import requests
-from requests.exceptions import RequestException
+from flask import Flask, jsonify, request
+
+from grobid import check_grobid_health, parse_pdf
 
 app = Flask(__name__)
 app.json.sort_keys = False
 
-GROBID_URL = os.getenv("GROBID_URL", "http://grobid:8070")
-
-def check_grobid_status():
-    """Check if GROBID service is running by calling its health endpoint"""
-    try:
-        response = requests.get(f"{GROBID_URL}/api/health", timeout=5)
-        return response.status_code == 200
-    except RequestException:
-        return False
 
 @app.route("/")
 def index():
-    grobid_status = check_grobid_status()
+    grobid_status = check_grobid_health(GROBID_URL)
     if grobid_status:
-        return jsonify({
-            "status": "ok",
-            "message": "GROBID service is running!"
-        })
+        return jsonify({"status": "grobid is alive"})
     else:
+        return jsonify({"status": "grobid is dead :("}), 503
+
+
+@app.route("/parse-pdf", methods=["POST"])
+def parse_pdf():
+    # fetch and validate request body
+    data = request.get_json()
+    pdf_url = data.get("pdf_url")
+    pdf_key = data.get("pdf_key")
+    native_id = data.get("native_id")
+    native_id_namespace = data.get("native_id_namespace")
+
+    if not pdf_url or not pdf_key or not native_id or not native_id_namespace:
         return jsonify({
-            "status": "error",
-            "message": "GROBID service is not available"
-        }), 503
+            "error": "Missing required fields in request body: pdf_url, pdf_key, native_id, native_id_namespace"
+        }), 400
+
+    # parse pdf
+    response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
+
+
 
 if __name__ == "__main__":
     debug_mode = os.getenv("FLASK_ENV", "production") == "development"
