@@ -1,11 +1,14 @@
 import os
+import datetime
 from io import BytesIO
 import gzip
+import time
 from urllib.parse import quote
 import uuid
 
-import requests
 import boto3
+from boto3.dynamodb.conditions import Key
+import requests
 
 PDF_BUCKET = os.getenv("PDF_BUCKET", "openalex-harvested-pdf")
 GROBID_XML_BUCKET = os.getenv("GROBID_XML_BUCKET", "openalex-grobid-xml")
@@ -25,6 +28,11 @@ def check_grobid_health():
         return False
 
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
+    # check if already parsed
+    previous_xml_uuid = previous_parse(pdf_uuid)
+    if previous_xml_uuid:
+        return {"error": f"PDF has already been parsed with id: {previous_xml_uuid}"}
+
     # try to get the file from s3
     try:
         pdf_content = get_file_from_s3(pdf_uuid)
@@ -44,7 +52,22 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     xml_uuid = str(uuid.uuid4())
     xml_content = grobid_response.content.decode('utf-8')
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
+    save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace)
+    return {"id": xml_uuid}
 
+
+def previous_parse(pdf_uuid):
+    # check if the pdf has already been parsed by seeing if the source_pdf_key exists in the grobid-xml table
+    table = dynamodb.Table("grobid-xml")
+    response = table.query(
+        IndexName="by_source_pdf_key",
+        KeyConditionExpression=Key("source_pdf_key").eq(f"{pdf_uuid}.pdf")
+    )
+
+    # return the xml uuid if it exists
+    if response["Items"]:
+        return response["Items"][0]["id"]
+    return None
 
 def get_file_from_s3(pdf_uuid):
     response = s3.get_object(Bucket=PDF_BUCKET, Key=f"{pdf_uuid}.pdf")
@@ -104,3 +127,23 @@ def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native
             "native_id_namespace": native_id_namespace_encoded
         }
     )
+
+
+def save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace):
+    table = dynamodb.Table("grobid-xml")
+    table.put_item(
+        Item={
+            "id": xml_uuid,
+            "native_id": normalize_native_id(native_id),
+            "native_id_namespace": native_id_namespace,
+            "s3_key": f"{xml_uuid}.xml.gz",
+            "source_pdf_key": f"{pdf_uuid}.pdf",
+            "url": pdf_url,
+            "created_date": datetime.datetime.now().isoformat(),
+            "created_timestamp": int(time.time())
+        }
+    )
+
+
+def normalize_native_id(native_id):
+    return native_id.lower().strip()
