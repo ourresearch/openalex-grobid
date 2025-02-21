@@ -1,0 +1,24 @@
+version: "3.8"
+services:
+  grobid:
+    image: lfoppiano/grobid:latest
+    container_name: grobid
+    ports:
+      - "8070:8070"
+
+  flask:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    container_name: flask
+    ports:
+      - "5000:5000"
+    depends_on:
+      - grobid
+    env_file:
+      - .env
+    environment:
+      GROBID_URL: "http://grobid:8070"
+      AWS_ACCESS_KEY_ID: "YOUR_KEY"
+      AWS_SECRET_ACCESS_KEY: "YOUR_SECRET"
+      AWS_DEFAULT_REGION: "us-east-1"
