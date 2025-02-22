@@ -1,19 +1,21 @@
-import os
 import datetime
-from io import BytesIO
 import gzip
+from io import BytesIO
 import time
 from urllib.parse import quote
 import uuid
 
 import boto3
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 import requests
 
-PDF_BUCKET = os.getenv("PDF_BUCKET", "openalex-harvested-pdfs")
-GROBID_XML_BUCKET = os.getenv("GROBID_XML_BUCKET", "openalex-harvested-grobid-xml")
-GROBID_URL = os.getenv("GROBID_URL", "http://grobid:8070")
+from exceptions import PDFProcessingError
+
+GROBID_URL = "http://grobid:8070"
+GROBID_XML_BUCKET = "openalex-harvested-grobid-xml"
 MAX_FILE_SIZE_IN_MB = 20
+PDF_BUCKET = "openalex-harvested-pdfs"
 
 s3 = boto3.client("s3")
 dynamodb = boto3.resource("dynamodb")
@@ -27,28 +29,35 @@ def check_grobid_health():
     except requests.RequestException:
         return False
 
+
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # check if already parsed
     previous_xml_uuid = previous_parse(pdf_uuid)
     if previous_xml_uuid:
-        return {"error": f"PDF has already been parsed with id: {previous_xml_uuid}"}
+        raise PDFProcessingError(
+            message=f"PDF has already been parsed with id: {previous_xml_uuid}",
+            status_code=409
+        )
 
     # try to get the file from s3
-    try:
-        pdf_content = get_file_from_s3(pdf_uuid)
-    except FileNotFoundError as e:
-        return {"error": str(e)}
+    pdf_content = get_file_from_s3(pdf_uuid)
 
     # validate the file
     if is_file_too_large(pdf_content):
-        return {"error": "File is too large. Max file size is 20mb."}
+        raise PDFProcessingError(
+            message=f"File is too large. Max file size is {MAX_FILE_SIZE_IN_MB}mb.",
+            status_code=413
+        )
     elif is_pdf_empty(pdf_content):
-        return {"error": "PDF is empty."}
+        raise PDFProcessingError(
+            message="PDF is empty.",
+            status_code=400
+        )
 
     # call grobid api
     grobid_response = call_grobid_api(pdf_content)
 
-    # create a new id and save the file
+    # create a new uuid and save the file
     xml_uuid = str(uuid.uuid4())
     xml_content = grobid_response.content.decode('utf-8')
 
@@ -59,7 +68,7 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # save
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
     save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace)
-    return {"id": xml_uuid}
+    return {"id": xml_uuid, "status": "success", "s3_key": f"{xml_uuid}.xml.gz", "s3_path": f"s3://{GROBID_XML_BUCKET}/{xml_uuid}.xml.gz"}
 
 
 def previous_parse(pdf_uuid):
@@ -75,12 +84,31 @@ def previous_parse(pdf_uuid):
         return response["Items"][0]["id"]
     return None
 
+
 def get_file_from_s3(pdf_uuid):
-    response = s3.get_object(Bucket=PDF_BUCKET, Key=f"{pdf_uuid}.pdf")
-    # file not found
-    if response["ResponseMetadata"]["HTTPStatusCode"] != 200:
-        raise FileNotFoundError(f"File not found in S3: {pdf_uuid}.pdf")
-    return response["Body"].read()
+    try:
+        response = s3.get_object(
+            Bucket=PDF_BUCKET,
+            Key=f"{pdf_uuid}.pdf"
+        )
+        return response["Body"].read()
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchKey':
+            raise PDFProcessingError(
+                message=f"PDF not found in S3 bucket: {PDF_BUCKET}",
+                status_code=404
+            )
+        elif error_code == 'NoSuchBucket':
+            raise PDFProcessingError(
+                message=f"S3 bucket not found: {PDF_BUCKET}",
+                status_code=503
+            )
+        else:
+            raise PDFProcessingError(
+                message=f"S3 error: {str(e)}",
+                status_code=503
+            )
 
 
 def is_file_too_large(pdf_content):
