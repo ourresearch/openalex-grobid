@@ -2,6 +2,7 @@ import os
 
 from flask import Flask, jsonify, request
 
+from exceptions import PDFProcessingError
 from grobid import check_grobid_health, parse_pdf
 
 app = Flask(__name__)
@@ -32,9 +33,11 @@ def parse():
         }), 400
 
     # parse pdf
-    response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
+    try:
+        response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
+    except PDFProcessingError as e:
+        return jsonify({"error": e.message}), e.status_code
     return jsonify(response)
-
 
 
 if __name__ == "__main__":
