@@ -17,16 +17,16 @@ GROBID_XML_BUCKET = "openalex-harvested-grobid-xml"
 MAX_FILE_SIZE_IN_MB = 20
 PDF_BUCKET = "openalex-harvested-pdfs"
 
-s3 = boto3.client("s3")
-dynamodb = boto3.resource("dynamodb")
+s3 = boto3.client("s3", region_name="us-east-1")
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
 
 def check_grobid_health():
     try:
         response = requests.get(f"{GROBID_URL}/api/isalive")
         response.raise_for_status()
-        return response.json()["status"] == "ok"
-    except requests.RequestException:
+        return True
+    except requests.exceptions.RequestException:
         return False
 
 
@@ -150,7 +150,6 @@ def call_grobid_api(pdf_content):
 
 
 def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace):
-    # save the response to s3
     xml_content_compressed = gzip.compress(xml_content.encode('utf-8'))
     pdf_url_encoded = quote(pdf_url)
     native_id_encoded = quote(native_id)
