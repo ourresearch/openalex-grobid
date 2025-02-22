@@ -181,6 +181,7 @@ def save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, nat
             "s3_key": f"{xml_uuid}.xml.gz",
             "source_pdf_key": f"{pdf_uuid}.pdf",
             "url": pdf_url,
+            "new_format": True,
             "created_date": datetime.datetime.now().isoformat(),
             "created_timestamp": int(time.time())
         }
