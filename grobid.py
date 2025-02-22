@@ -63,7 +63,10 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
 
     # validate the xml content
     if not xml_content:
-        return {"error": "GROBID response is empty."}
+        raise PDFProcessingError(
+            message="GROBID did not return any content.",
+            status_code=500
+        )
 
     # save
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
@@ -71,6 +74,7 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     return {
         "id": xml_uuid,
         "status": "success",
+        "xml_content": xml_content,
         "s3_key": f"{xml_uuid}.xml.gz",
         "s3_path": f"s3://{GROBID_XML_BUCKET}/{xml_uuid}.xml.gz"
     }

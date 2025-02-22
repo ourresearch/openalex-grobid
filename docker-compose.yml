@@ -1,6 +1,6 @@
 services:
   grobid:
-    image: lfoppiano/grobid:0.8.1
+    image: lfoppiano/grobid:0.8.1  # different than production, works on a mac
     container_name: grobid
     ports:
       - "8070:8070"
