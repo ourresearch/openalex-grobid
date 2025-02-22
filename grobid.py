@@ -68,7 +68,12 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # save
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
     save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace)
-    return {"id": xml_uuid, "status": "success", "s3_key": f"{xml_uuid}.xml.gz", "s3_path": f"s3://{GROBID_XML_BUCKET}/{xml_uuid}.xml.gz"}
+    return {
+        "id": xml_uuid,
+        "status": "success",
+        "s3_key": f"{xml_uuid}.xml.gz",
+        "s3_path": f"s3://{GROBID_XML_BUCKET}/{xml_uuid}.xml.gz"
+    }
 
 
 def previous_parse(pdf_uuid):

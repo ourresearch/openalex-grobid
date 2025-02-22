@@ -22,7 +22,7 @@ def index():
 def parse():
     # fetch and validate request body
     data = request.get_json()
-    pdf_url = data.get("pdf_url")
+    pdf_url = data.get("url")
     pdf_key = data.get("pdf_key")
     native_id = data.get("native_id")
     native_id_namespace = data.get("native_id_namespace")
@@ -37,7 +37,7 @@ def parse():
         response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
     except PDFProcessingError as e:
         return jsonify({"error": e.message}), e.status_code
-    return jsonify(response)
+    return jsonify(response), 201
 
 
 if __name__ == "__main__":
