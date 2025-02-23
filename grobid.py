@@ -84,8 +84,8 @@ def previous_parse(pdf_uuid):
     # check if the pdf has already been parsed by seeing if the source_pdf_key exists in the grobid-xml table
     table = dynamodb.Table("grobid-xml")
     response = table.query(
-        IndexName="by_source_pdf_key",
-        KeyConditionExpression=Key("source_pdf_key").eq(f"{pdf_uuid}.pdf")
+        IndexName="by_source_pdf_id",
+        KeyConditionExpression=Key("source_pdf_id").eq(pdf_uuid)
     )
 
     # return the xml uuid if it exists
@@ -179,7 +179,7 @@ def save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, nat
             "native_id": normalize_native_id(native_id),
             "native_id_namespace": native_id_namespace,
             "s3_key": f"{xml_uuid}.xml.gz",
-            "source_pdf_key": f"{pdf_uuid}.pdf",
+            "source_pdf_id": pdf_uuid,
             "url": pdf_url,
             "new_format": True,
             "created_date": datetime.datetime.now().isoformat(),
