@@ -32,12 +32,12 @@ def check_grobid_health():
 
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # check if already parsed
-    previous_xml_uuid = previous_parse(pdf_uuid)
-    if previous_xml_uuid:
-        raise PDFProcessingError(
-            message=f"PDF has already been parsed with id: {previous_xml_uuid}",
-            status_code=409
-        )
+    # previous_xml_uuid = previous_parse(pdf_uuid)
+    # if previous_xml_uuid:
+    #     raise PDFProcessingError(
+    #         message=f"PDF has already been parsed with id: {previous_xml_uuid}",
+    #         status_code=409
+    #     )
 
     # try to get the file from s3
     pdf_content = get_file_from_s3(pdf_uuid)
@@ -144,13 +144,13 @@ def call_grobid_api(pdf_content):
     }
 
     response = requests.post(
-        f"{GROBID_URL}/processFulltextDocument",
+        f"{GROBID_URL}/api/processFulltextDocument",
         files=files,
         data=data,
         timeout=60
     )
     response.raise_for_status()
-    return response.json()
+    return response
 
 
 def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace):

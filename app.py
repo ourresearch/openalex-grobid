@@ -23,18 +23,18 @@ def parse():
     # fetch and validate request body
     data = request.get_json()
     pdf_url = data.get("url")
-    pdf_key = data.get("pdf_key")
+    pdf_uuid = data.get("pdf_uuid")
     native_id = data.get("native_id")
     native_id_namespace = data.get("native_id_namespace")
 
-    if not pdf_url or not pdf_key or not native_id or not native_id_namespace:
+    if not pdf_url or not pdf_uuid or not native_id or not native_id_namespace:
         return jsonify({
-            "error": "Missing required fields in request body: pdf_url, pdf_key, native_id, native_id_namespace"
+            "error": "Missing required fields in request body: url, pdf_uuid, native_id, native_id_namespace"
         }), 400
 
     # parse pdf
     try:
-        response = parse_pdf(pdf_url, pdf_key, native_id, native_id_namespace)
+        response = parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace)
     except PDFProcessingError as e:
         return jsonify({"error": e.message}), e.status_code
     return jsonify(response), 201
