@@ -12,7 +12,7 @@ import requests
 
 from exceptions import PDFProcessingError
 
-GROBID_URL = "http://grobid:8070"
+GROBID_URL = "http://localhost:8070"
 GROBID_XML_BUCKET = "openalex-harvested-grobid-xml"
 MAX_FILE_SIZE_IN_MB = 20
 PDF_BUCKET = "openalex-harvested-pdfs"
