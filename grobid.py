@@ -34,13 +34,19 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # check if already parsed
     previous_xml_uuid = previous_parse(pdf_uuid)
     if previous_xml_uuid:
-        raise PDFProcessingError(
-            message=f"PDF has already been parsed and is at file: {previous_xml_uuid}.xml.gz",
-            status_code=409
-        )
+        # return cached xml
+        xml_content = get_xml_file_from_s3(previous_xml_uuid).decode('utf-8')
+        return {
+            "id": previous_xml_uuid,
+            "status": "success - cached response",
+            "source_pdf_id": pdf_uuid,
+            "s3_key": f"{previous_xml_uuid}.xml.gz",
+            "s3_path": f"s3://{GROBID_XML_BUCKET}/{previous_xml_uuid}.xml.gz",
+            "xml_content": xml_content
+        }
 
     # try to get the file from s3
-    pdf_content = get_file_from_s3(pdf_uuid)
+    pdf_content = get_pdf_file_from_s3(pdf_uuid)
 
     # validate the file
     if is_file_too_large(pdf_content):
@@ -100,7 +106,7 @@ def previous_parse(pdf_uuid):
     return None
 
 
-def get_file_from_s3(pdf_uuid):
+def get_pdf_file_from_s3(pdf_uuid):
     try:
         response = s3.get_object(
             Bucket=PDF_BUCKET,
@@ -118,6 +124,27 @@ def get_file_from_s3(pdf_uuid):
             raise PDFProcessingError(
                 message=f"S3 bucket not found: {PDF_BUCKET}",
                 status_code=503
+            )
+        else:
+            raise PDFProcessingError(
+                message=f"S3 error: {str(e)}",
+                status_code=503
+            )
+
+
+def get_xml_file_from_s3(xml_uuid):
+    try:
+        response = s3.get_object(
+            Bucket=GROBID_XML_BUCKET,
+            Key=f"{xml_uuid}.xml.gz"
+        )
+        return response["Body"].read()
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'NoSuchKey':
+            raise PDFProcessingError(
+                message=f"XML not found in S3 bucket: {GROBID_XML_BUCKET}",
+                status_code=404
             )
         else:
             raise PDFProcessingError(
