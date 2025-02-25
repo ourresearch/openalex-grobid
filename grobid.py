@@ -35,14 +35,14 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     previous_xml_uuid = previous_parse(pdf_uuid)
     if previous_xml_uuid:
         # return cached xml
-        xml_content = get_xml_file_from_s3(previous_xml_uuid).decode('utf-8')
+        xml_content = get_xml_file_from_s3(previous_xml_uuid)
         return {
             "id": previous_xml_uuid,
             "status": "success - cached response",
             "source_pdf_id": pdf_uuid,
             "s3_key": f"{previous_xml_uuid}.xml.gz",
             "s3_path": f"s3://{GROBID_XML_BUCKET}/{previous_xml_uuid}.xml.gz",
-            "xml_content": xml_content
+            "xml_content": xml_content.decode('utf-8')
         }
 
     # try to get the file from s3
@@ -131,6 +131,16 @@ def get_pdf_file_from_s3(pdf_uuid):
                 status_code=503
             )
 
+def gunzip(content):
+    """Decompress gzipped content"""
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(content), mode='rb') as gz_file:
+            decompressed_content = gz_file.read()
+        return decompressed_content
+    except gzip.BadGzipFile as e:
+        print(f"Error decompressing content: {str(e)}")
+        return content
+
 
 def get_xml_file_from_s3(xml_uuid):
     try:
@@ -138,7 +148,8 @@ def get_xml_file_from_s3(xml_uuid):
             Bucket=GROBID_XML_BUCKET,
             Key=f"{xml_uuid}.xml.gz"
         )
-        return response["Body"].read()
+        content = response["Body"].read()
+        return gunzip(content)
     except ClientError as e:
         error_code = e.response['Error']['Code']
         if error_code == 'NoSuchKey':
