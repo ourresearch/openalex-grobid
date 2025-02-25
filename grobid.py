@@ -32,12 +32,12 @@ def check_grobid_health():
 
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     # check if already parsed
-    previous_xml_uuid = previous_parse(pdf_uuid)
-    if previous_xml_uuid:
-        raise PDFProcessingError(
-            message=f"PDF has already been parsed and is at file: {previous_xml_uuid}.xml.gz",
-            status_code=409
-        )
+    # previous_xml_uuid = previous_parse(pdf_uuid)
+    # if previous_xml_uuid:
+    #     raise PDFProcessingError(
+    #         message=f"PDF has already been parsed and is at file: {previous_xml_uuid}.xml.gz",
+    #         status_code=409
+    #     )
 
     # try to get the file from s3
     pdf_content = get_file_from_s3(pdf_uuid)
@@ -51,6 +51,11 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
     elif is_pdf_empty(pdf_content):
         raise PDFProcessingError(
             message="PDF is empty.",
+            status_code=400
+        )
+    elif not_a_pdf(pdf_content):
+        raise PDFProcessingError(
+            message="File does not appear to be a PDF.",
             status_code=400
         )
 
@@ -131,6 +136,10 @@ def is_file_too_large(pdf_content):
 
 def is_pdf_empty(file):
     return len(file) == 0
+
+
+def not_a_pdf(file):
+    return file[:4] != b"%PDF"
 
 
 def call_grobid_api(pdf_content):
