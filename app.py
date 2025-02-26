@@ -11,6 +11,11 @@ app.json.sort_keys = False
 
 @app.route("/")
 def index():
+    return jsonify({"status": "ok"})
+
+
+@app.route("/grobid-health")
+def grobid_health():
     grobid_status = check_grobid_health()
     if grobid_status:
         return jsonify({"status": "grobid is alive"})
