@@ -1,4 +1,5 @@
 import os
+import shutil
 
 from flask import Flask, jsonify, request
 
@@ -11,6 +12,17 @@ app.json.sort_keys = False
 
 @app.route("/")
 def index():
+    disk_usage = shutil.disk_usage("/")
+    free_percentage = disk_usage.free / disk_usage.total * 100
+
+    # If free space is less than 15%, return unhealthy status
+    if free_percentage < 15:
+        return jsonify({
+            "status": "critical",
+            "error": "Disk space critically low",
+            "free_percentage": free_percentage
+        }), 503
+
     return jsonify({"status": "ok"})
 
 
