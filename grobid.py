@@ -5,6 +5,8 @@ import time
 from urllib.parse import quote
 import uuid
 
+import os
+
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -13,11 +15,17 @@ import requests
 from exceptions import PDFProcessingError
 
 GROBID_URL = "http://localhost:8070"
-GROBID_XML_BUCKET = "openalex-harvested-grobid-xml"
+GROBID_XML_BUCKET = "openalex-grobid-xml"
 MAX_FILE_SIZE_IN_MB = 20
-PDF_BUCKET = "openalex-harvested-pdfs"
+PDF_BUCKET = "openalex-pdfs"
 
-s3 = boto3.client("s3", region_name="us-east-1")
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.getenv("R2_ENDPOINT"),
+    aws_access_key_id=os.getenv("R2_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
+    region_name="auto",
+)
 dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
 
