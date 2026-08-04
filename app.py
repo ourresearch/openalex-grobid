@@ -43,6 +43,7 @@ def parse():
     pdf_uuid = data.get("pdf_uuid")
     native_id = data.get("native_id")
     native_id_namespace = data.get("native_id_namespace")
+    bypass_cache = bool(data.get("bypass_cache", False))
 
     if not pdf_url or not pdf_uuid or not native_id or not native_id_namespace:
         return jsonify({
@@ -51,7 +52,7 @@ def parse():
 
     # parse pdf
     try:
-        response = parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace)
+        response = parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=bypass_cache)
     except PDFProcessingError as e:
         return jsonify({"error": e.message}), e.status_code
     return jsonify(response), 201

@@ -38,9 +38,11 @@ def check_grobid_health():
         return False
 
 
-def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
+def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=False):
+    # bypass_cache: force a fresh parse, returned but NOT saved to S3/DynamoDB —
+    # for parser-version comparison runs; leaves all stored state untouched
     # check if already parsed
-    previous_xml_uuid = previous_parse(pdf_uuid)
+    previous_xml_uuid = None if bypass_cache else previous_parse(pdf_uuid)
     if previous_xml_uuid:
         # return cached xml
         xml_content = get_xml_file_from_s3(previous_xml_uuid)
@@ -88,6 +90,15 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace):
         )
 
     # save
+    if bypass_cache:
+        return {
+            "id": xml_uuid,
+            "status": "success - not persisted",
+            "source_pdf_id": pdf_uuid,
+            "s3_key": None,
+            "s3_path": None,
+            "xml_content": xml_content
+        }
     save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace)
     save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace)
     return {
