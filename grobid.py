@@ -85,8 +85,8 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=Fa
     # validate the xml content
     if not xml_content:
         raise PDFProcessingError(
-            message="GROBID did not return any content.",
-            status_code=500
+            message="grobid cannot process pdf: returned no content",
+            status_code=422
         )
 
     # save
@@ -210,13 +210,37 @@ def call_grobid_api(pdf_content):
         "includeRawAffiliations": "1"
     }
 
-    response = requests.post(
-        f"{GROBID_URL}/api/processFulltextDocument",
-        files=files,
-        data=data,
-        timeout=60
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            f"{GROBID_URL}/api/processFulltextDocument",
+            files=files,
+            data=data,
+            timeout=60
+        )
+    except requests.exceptions.Timeout:
+        raise PDFProcessingError(
+            message="grobid timeout: no response within 60s",
+            status_code=504
+        )
+    except requests.exceptions.RequestException as e:
+        raise PDFProcessingError(
+            message=f"grobid unavailable: {type(e).__name__}: {e}",
+            status_code=503
+        )
+
+    # 503 from the sidecar means its handler pool is saturated — transient, worth
+    # a retry. Everything else it rejects (5xx from pdfalto, 4xx malformed input)
+    # is deterministic for this file: same bytes will fail the same way.
+    if response.status_code == 503:
+        raise PDFProcessingError(
+            message=f"grobid unavailable: sidecar busy: {response.text[:200]}",
+            status_code=503
+        )
+    if response.status_code >= 400:
+        raise PDFProcessingError(
+            message=f"grobid cannot process pdf: {response.status_code}: {response.text[:200]}",
+            status_code=422
+        )
     return response
 
 
@@ -226,33 +250,47 @@ def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native
     native_id_encoded = quote(native_id)
     native_id_namespace_encoded = quote(native_id_namespace)
 
-    s3.put_object(
-        Bucket=GROBID_XML_BUCKET,
-        Key=f"{xml_uuid}.xml.gz",
-        Body=xml_content_compressed,
-        Metadata={
-            "pdf_url": pdf_url_encoded,
-            "native_id": native_id_encoded,
-            "native_id_namespace": native_id_namespace_encoded
-        }
-    )
+    # the parse itself succeeded; a storage failure here is transient, so it gets
+    # a retryable code rather than escaping as an untyped 500
+    try:
+        s3.put_object(
+            Bucket=GROBID_XML_BUCKET,
+            Key=f"{xml_uuid}.xml.gz",
+            Body=xml_content_compressed,
+            Metadata={
+                "pdf_url": pdf_url_encoded,
+                "native_id": native_id_encoded,
+                "native_id_namespace": native_id_namespace_encoded
+            }
+        )
+    except ClientError as e:
+        raise PDFProcessingError(
+            message=f"storage error: s3 put_object failed: {e}",
+            status_code=503
+        )
 
 
 def save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, native_id_namespace):
     table = dynamodb.Table("grobid-xml")
-    table.put_item(
-        Item={
-            "id": xml_uuid,
-            "native_id": normalize_native_id(native_id),
-            "native_id_namespace": native_id_namespace,
-            "s3_key": f"{xml_uuid}.xml.gz",
-            "source_pdf_id": pdf_uuid,
-            "url": pdf_url,
-            "new_format": True,
-            "created_date": datetime.datetime.now().isoformat(),
-            "created_timestamp": int(time.time())
-        }
-    )
+    try:
+        table.put_item(
+            Item={
+                "id": xml_uuid,
+                "native_id": normalize_native_id(native_id),
+                "native_id_namespace": native_id_namespace,
+                "s3_key": f"{xml_uuid}.xml.gz",
+                "source_pdf_id": pdf_uuid,
+                "url": pdf_url,
+                "new_format": True,
+                "created_date": datetime.datetime.now().isoformat(),
+                "created_timestamp": int(time.time())
+            }
+        )
+    except ClientError as e:
+        raise PDFProcessingError(
+            message=f"storage error: dynamodb put_item failed: {e}",
+            status_code=503
+        )
 
 
 def normalize_native_id(native_id):

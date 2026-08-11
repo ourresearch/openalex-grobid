@@ -2,12 +2,24 @@ import os
 import shutil
 
 from flask import Flask, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 from exceptions import PDFProcessingError
 from grobid import check_grobid_health, parse_pdf
 
 app = Flask(__name__)
 app.json.sort_keys = False
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    """Always answer JSON. An unhandled exception used to render Flask's HTML
+    error page, which callers store verbatim as an opaque 500 with no way to
+    tell a transient fault from a permanently bad PDF."""
+    if isinstance(e, HTTPException):
+        return jsonify({"error": f"{e.name}: {e.description}"}), e.code
+    app.logger.exception("unhandled error")
+    return jsonify({"error": f"unhandled {type(e).__name__}: {e}"}), 500
 
 
 @app.route("/")
