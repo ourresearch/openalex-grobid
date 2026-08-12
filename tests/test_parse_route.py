@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -209,6 +213,45 @@ def test_dynamodb_write_failure_is_retryable(client, storage, monkeypatch):
         response = post_parse(client)
 
     assert response.status_code == 503
+
+
+@pytest.mark.parametrize("target, op", [
+    ("get_object", "reading the PDF"),
+    ("put_object", "writing the TEI"),
+])
+def test_r2_transport_failures_are_retryable(client, storage, monkeypatch, target, op):
+    """BotoCoreError is a sibling of ClientError, not a subclass, so handlers
+    written against ClientError alone miss every timeout and connection failure.
+    One escaped in production as `unhandled ReadTimeoutError` — recorded by the
+    caller as a permanent failure, which then blocks the PDF from ever being
+    retried, for what was a transport hiccup."""
+    s3, _ = storage
+
+    def boom(**kwargs):
+        raise ReadTimeoutError(endpoint_url="https://r2.example")
+
+    monkeypatch.setattr(s3, target, boom)
+    with FakeGrobid([{"status": 200, "body": TEI}]) as server:
+        monkeypatch.setattr(grobid, "GROBID_URL", server.url)
+        response = post_parse(client)
+
+    assert response.status_code == 503, f"{op} timed out; nothing is wrong with the PDF"
+    assert "storage error" in response.get_json()["error"]
+
+
+def test_dynamodb_lookup_failure_is_retryable(client, storage, monkeypatch):
+    """The cache lookup runs before anything is known about the document, so a
+    failure there must not be reported as a document the caller should give up on."""
+    _, table = storage
+
+    def boom(**kwargs):
+        raise EndpointConnectionError(endpoint_url="https://dynamodb.example")
+
+    monkeypatch.setattr(table, "query", boom)
+    response = post_parse(client)
+
+    assert response.status_code == 503
+    assert "storage error" in response.get_json()["error"]
 
 
 def test_unexpected_errors_still_answer_json(client, storage, monkeypatch):

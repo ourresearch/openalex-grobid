@@ -10,7 +10,7 @@ import os
 
 import boto3
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 import requests
 
 from exceptions import PDFProcessingError
@@ -51,6 +51,11 @@ GROBID_MIN_ATTEMPT_SECONDS = 10
 # that grobid has stopped answering.
 GROBID_HEALTH_TIMEOUT_SECONDS = 5
 
+# Cloudflare R2, not S3 — an S3-protocol client pointed at R2_ENDPOINT. Both
+# buckets above are R2. The `s3` name here, the s3_key/s3_path response fields
+# and the "S3 bucket" error strings are kept because callers persist them
+# (walden's grobid_processing_results columns, and backlog queries matching
+# historical rows on those strings); they all describe R2 objects. See README.
 s3 = boto3.client(
     "s3",
     endpoint_url=os.getenv("R2_ENDPOINT"),
@@ -58,6 +63,7 @@ s3 = boto3.client(
     aws_secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY"),
     region_name="auto",
 )
+# the one thing still on AWS: the source_pdf_id -> xml_uuid index
 dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
 
@@ -149,10 +155,18 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=Fa
 def previous_parse(pdf_uuid):
     # check if the pdf has already been parsed by seeing if the source_pdf_key exists in the grobid-xml table
     table = dynamodb.Table("grobid-xml")
-    response = table.query(
-        IndexName="by_source_pdf_id",
-        KeyConditionExpression=Key("source_pdf_id").eq(pdf_uuid)
-    )
+    try:
+        response = table.query(
+            IndexName="by_source_pdf_id",
+            KeyConditionExpression=Key("source_pdf_id").eq(pdf_uuid)
+        )
+    except (ClientError, BotoCoreError) as e:
+        # a failed cache lookup says nothing about the document, so it must not
+        # read as one that cannot be parsed
+        raise PDFProcessingError(
+            message=f"storage error: dynamodb query failed: {e}",
+            status_code=503
+        )
 
     # return the xml uuid if it exists
     if response["Items"]:
@@ -184,6 +198,14 @@ def get_pdf_file_from_s3(pdf_uuid):
                 message=f"S3 error: {str(e)}",
                 status_code=503
             )
+    except BotoCoreError as e:
+        # timeouts, endpoint and connection failures — a transport problem, not a
+        # verdict on the PDF, so it must stay retryable rather than escaping as an
+        # unhandled 500 the caller records as permanent
+        raise PDFProcessingError(
+            message=f"storage error: s3 get_object failed: {type(e).__name__}: {e}",
+            status_code=503
+        )
 
 def gunzip(content):
     """Decompress gzipped content"""
@@ -216,6 +238,11 @@ def get_xml_file_from_s3(xml_uuid):
                 message=f"S3 error: {str(e)}",
                 status_code=503
             )
+    except BotoCoreError as e:
+        raise PDFProcessingError(
+            message=f"storage error: s3 get_object failed: {type(e).__name__}: {e}",
+            status_code=503
+        )
 
 
 def is_file_too_large(pdf_content):
@@ -371,9 +398,9 @@ def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native
                 "native_id_namespace": native_id_namespace_encoded
             }
         )
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         raise PDFProcessingError(
-            message=f"storage error: s3 put_object failed: {e}",
+            message=f"storage error: s3 put_object failed: {type(e).__name__}: {e}",
             status_code=503
         )
 
@@ -394,9 +421,9 @@ def save_grobid_metadata_to_dynamodb(xml_uuid, pdf_uuid, pdf_url, native_id, nat
                 "created_timestamp": int(time.time())
             }
         )
-    except ClientError as e:
+    except (ClientError, BotoCoreError) as e:
         raise PDFProcessingError(
-            message=f"storage error: dynamodb put_item failed: {e}",
+            message=f"storage error: dynamodb put_item failed: {type(e).__name__}: {e}",
             status_code=503
         )
 
