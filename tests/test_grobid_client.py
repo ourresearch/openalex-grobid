@@ -6,6 +6,7 @@ from a refused TCP connect. See fake_grobid.py for why that matters.
 
 Run:  pytest tests/ -v
 """
+import re
 import socket
 import sys
 import time
@@ -253,18 +254,31 @@ def test_deadline_clears_the_sidecar_ceiling():
     assert grobid.GROBID_CONNECT_TIMEOUT_SECONDS < grobid.GROBID_TOTAL_DEADLINE_SECONDS
 
 
+def gunicorn_command():
+    """The CMD line, in either exec or shell form."""
+    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
+    return [line for line in dockerfile.splitlines()
+            if line.startswith("CMD") and "gunicorn" in line][0]
+
+
 def test_gunicorn_timeout_exceeds_the_client_deadline():
     """If gunicorn's --timeout drops below the budget, the worker is SIGKILLed
     mid-retry and the caller sees a dropped connection instead of a clean 503.
     The two numbers live in different files, so nothing else couples them."""
-    dockerfile = (Path(__file__).resolve().parent.parent / "Dockerfile").read_text()
-    command = [line for line in dockerfile.splitlines()
-               if line.startswith("CMD") and "gunicorn" in line][0]
-    parts = [p.strip() for p in
-             command.replace('"', "").replace("[", "").replace("]", "").split(",")]
-    gunicorn_timeout = int(parts[parts.index("--timeout") + 1])
+    gunicorn_timeout = int(re.search(r"--timeout\s+(\d+)", gunicorn_command()).group(1))
 
     assert gunicorn_timeout > grobid.GROBID_TOTAL_DEADLINE_SECONDS
+
+
+def test_gunicorn_workers_match_the_sidecar_pool():
+    """--workers below the sidecar's concurrency strands engines nobody can reach;
+    above it, the surplus is just 503s and backoff. The Dockerfile assumed 4 while
+    the stock image shipped 10, so a quarter of the pool sat idle unnoticed."""
+    default_workers = int(
+        re.search(r"--workers\s+\$\{GUNICORN_WORKERS:-(\d+)\}", gunicorn_command()).group(1)
+    )
+
+    assert default_workers == grobid.SIDECAR_CONCURRENCY
 
 
 def test_health_check_has_a_timeout(point_at):

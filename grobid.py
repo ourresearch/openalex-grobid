@@ -50,6 +50,12 @@ GROBID_MIN_ATTEMPT_SECONDS = 10
 # hang indefinitely and pin a worker — on the endpoint whose whole job is noticing
 # that grobid has stopped answering.
 GROBID_HEALTH_TIMEOUT_SECONDS = 5
+# The sidecar's engine pool size, which gunicorn's --workers has to match. We run
+# the stock image with no mounted grobid.yaml and GROBID no longer reads env vars,
+# so we cannot set this — it is a record of what the pinned image ships, and the
+# Dockerfile default is tested against it. Verify against a running sidecar at
+# /grobid-health (pool metrics) and re-check on any GROBID_IMAGE bump.
+SIDECAR_CONCURRENCY = 10  # stock grobid 0.9.1
 
 # Cloudflare R2, not S3 — an S3-protocol client pointed at R2_ENDPOINT. Both
 # buckets above are R2. The `s3` name here, the s3_key/s3_path response fields
@@ -77,6 +83,25 @@ def check_grobid_health():
         return True
     except requests.exceptions.RequestException:
         return False
+
+
+def grobid_pool_status():
+    """The sidecar's own /api/health, which carries its engine pool metrics.
+
+    Our gunicorn worker count has to match that pool's size, and we cannot set it
+    (GROBID takes configuration only from a mounted yaml), so the number is
+    whatever the pinned image ships. Returned verbatim rather than parsed for a
+    named field: an upstream rename then degrades to "shown but unrecognised"
+    instead of silently reporting a wrong number.
+    """
+    try:
+        response = requests.get(
+            f"{GROBID_URL}/api/health",
+            timeout=GROBID_HEALTH_TIMEOUT_SECONDS
+        )
+        return response.json()
+    except (requests.exceptions.RequestException, ValueError) as e:
+        return {"error": f"{type(e).__name__}: {e}"}
 
 
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=False):

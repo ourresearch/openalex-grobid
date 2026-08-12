@@ -5,7 +5,7 @@ from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from exceptions import PDFProcessingError
-from grobid import check_grobid_health, parse_pdf
+from grobid import check_grobid_health, grobid_pool_status, parse_pdf
 
 app = Flask(__name__)
 app.json.sort_keys = False
@@ -41,10 +41,14 @@ def index():
 @app.route("/grobid-health")
 def grobid_health():
     grobid_status = check_grobid_health()
-    if grobid_status:
-        return jsonify({"status": "grobid is alive"})
-    else:
-        return jsonify({"status": "grobid is dead :("}), 503
+    return jsonify({
+        "status": "grobid is alive" if grobid_status else "grobid is dead :(",
+        # --workers has to match the sidecar's engine pool, and nothing enforces
+        # that: report both so a mismatch is visible instead of inferred from the
+        # image's default. See the Dockerfile.
+        "gunicorn_workers": os.getenv("GUNICORN_WORKERS", "10 (default)"),
+        "grobid_pool": grobid_pool_status(),
+    }), (200 if grobid_status else 503)
 
 
 @app.route("/parse", methods=["POST"])
