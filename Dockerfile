@@ -16,4 +16,13 @@ EXPOSE 8080
 #
 # --timeout must stay above GROBID_TOTAL_DEADLINE_SECONDS in grobid.py (170s),
 # or gunicorn SIGKILLs the worker mid-retry instead of letting it return a 503.
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "8", "--timeout", "180", "app:app"]
+# It also has to cover the R2 fetch before that call and the R2 + DynamoDB writes
+# after it, which sit outside the deadline: at 180 a worst-case request lands
+# within a few seconds of the kill line. 210 leaves room for both ends.
+#
+# Every layer above must be more patient than the one below, or the request is
+# severed from outside while work continues in here:
+#   pdfalto 120s < deadline 170s < gunicorn 210s < ALB idle 240s < client 270s
+# The ALB is configured out-of-band (idle_timeout.timeout_seconds); the client is
+# openalex-walden notebooks/parsing/parse_pdfs.ipynb.
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "8", "--timeout", "210", "app:app"]
