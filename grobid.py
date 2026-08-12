@@ -1,6 +1,7 @@
 import datetime
 import gzip
 from io import BytesIO
+import random
 import time
 from urllib.parse import quote
 import uuid
@@ -19,6 +20,37 @@ GROBID_XML_BUCKET = "openalex-grobid-xml"
 MAX_FILE_SIZE_IN_MB = 20
 PDF_BUCKET = "openalex-pdfs"
 
+# A 503 from the sidecar is back-pressure, not failure, so it is worth actually
+# retrying rather than handing straight back to the caller: the queue would only
+# redeliver the same request into the same saturated pool, having paid a full
+# round trip for it.
+GROBID_MAX_ATTEMPTS = 5
+GROBID_BACKOFF_BASE_SECONDS = 2
+GROBID_BACKOFF_MAX_SECONDS = 30
+# Wall-clock budget for the whole call, retries and backoff included — not per
+# attempt, or a run of connection failures stacks past gunicorn's --timeout and
+# the worker is SIGKILLed mid-retry, so the caller sees a dropped connection
+# instead of the clean 503 the retry loop exists to produce. Keep gunicorn's
+# --timeout above this (currently 180s).
+#
+# Sized against the sidecar: stock grobid 0.9.1 gives pdfalto timeoutSec: 120 and
+# runs model inference *after* that, so this must clear 120 with room to spare or
+# we abandon documents grobid is still legitimately working on. 170 leaves ~50s
+# of inference headroom on top of a worst-case pdfalto run.
+GROBID_TOTAL_DEADLINE_SECONDS = 170
+# Separate, short connect timeout: the sidecar is on localhost, so a slow connect
+# means a full listen backlog, not a slow document. Failing fast here leaves the
+# budget for actual processing.
+GROBID_CONNECT_TIMEOUT_SECONDS = 5
+# Don't start an attempt that cannot plausibly finish: it burns what is left of
+# the budget to arrive at the same retryable answer, and reports it as a 504
+# rather than the 503 the exhausted-budget path gives.
+GROBID_MIN_ATTEMPT_SECONDS = 10
+# Liveness probe, not a parse: it must fail fast. Without a timeout this call can
+# hang indefinitely and pin a worker — on the endpoint whose whole job is noticing
+# that grobid has stopped answering.
+GROBID_HEALTH_TIMEOUT_SECONDS = 5
+
 s3 = boto3.client(
     "s3",
     endpoint_url=os.getenv("R2_ENDPOINT"),
@@ -31,7 +63,10 @@ dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
 def check_grobid_health():
     try:
-        response = requests.get(f"{GROBID_URL}/api/isalive")
+        response = requests.get(
+            f"{GROBID_URL}/api/isalive",
+            timeout=GROBID_HEALTH_TIMEOUT_SECONDS
+        )
         response.raise_for_status()
         return True
     except requests.exceptions.RequestException:
@@ -199,49 +234,122 @@ def not_a_pdf(file):
     return file[:4] != b"%PDF"
 
 
-def call_grobid_api(pdf_content):
-    files = {
-        "input": ("file.pdf", BytesIO(pdf_content), "application/pdf")
-    }
+def backoff_delay(attempt):
+    """Exponential backoff with full jitter, in seconds. `attempt` is 1-based.
 
+    Full jitter (uniform over [0, ceiling]) rather than a fixed sleep: every worker
+    that hits the saturated sidecar backs off by a different amount, so they don't
+    resynchronise and retry as a thundering herd.
+    """
+    ceiling = min(
+        GROBID_BACKOFF_MAX_SECONDS,
+        GROBID_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+    )
+    return random.uniform(0, ceiling)
+
+
+def call_grobid_api(pdf_content):
+    # No consolidation: OpenAlex resolves header and citation metadata itself, so we
+    # only ask GROBID for what it can extract from the document.
     data = {
         "segmentSentences": "1",
         "includeRawCitations": "1",
         "includeRawAffiliations": "1"
     }
 
-    try:
-        response = requests.post(
-            f"{GROBID_URL}/api/processFulltextDocument",
-            files=files,
-            data=data,
-            timeout=60
-        )
-    except requests.exceptions.Timeout:
-        raise PDFProcessingError(
-            message="grobid timeout: no response within 60s",
-            status_code=504
-        )
-    except requests.exceptions.RequestException as e:
-        raise PDFProcessingError(
-            message=f"grobid unavailable: {type(e).__name__}: {e}",
-            status_code=503
-        )
+    started = time.monotonic()
 
-    # 503 from the sidecar means its handler pool is saturated — transient, worth
-    # a retry. Everything else it rejects (5xx from pdfalto, 4xx malformed input)
-    # is deterministic for this file: same bytes will fail the same way.
-    if response.status_code == 503:
-        raise PDFProcessingError(
-            message=f"grobid unavailable: sidecar busy: {response.text[:200]}",
-            status_code=503
+    for attempt in range(1, GROBID_MAX_ATTEMPTS + 1):
+        remaining = GROBID_TOTAL_DEADLINE_SECONDS - (time.monotonic() - started)
+        if remaining < GROBID_MIN_ATTEMPT_SECONDS:
+            retryable_reason = (
+                f"exhausted the {GROBID_TOTAL_DEADLINE_SECONDS}s budget"
+            )
+            break
+
+        # rebuilt each attempt: requests consumes the BytesIO on the previous
+        # POST, so a retry that reuses it would silently send an empty file
+        files = {
+            "input": ("file.pdf", BytesIO(pdf_content), "application/pdf")
+        }
+
+        try:
+            response = requests.post(
+                f"{GROBID_URL}/api/processFulltextDocument",
+                files=files,
+                data=data,
+                # read timeout is whatever is left of the budget, so no single
+                # attempt can overrun it
+                timeout=(GROBID_CONNECT_TIMEOUT_SECONDS, remaining)
+            )
+        except requests.exceptions.ReadTimeout:
+            # grobid is still working on this document; retrying in-process would
+            # stack a second parse on top of work already in flight. 504 rather
+            # than 503 only to separate them in logs — both are transient and both
+            # mean redeliver, as against the 422 paths, which mean this document is
+            # done for. Which of the two a slow document lands on depends on how
+            # much budget the jitter left for the final attempt, so callers must
+            # treat them identically.
+            raise PDFProcessingError(
+                message=(
+                    "grobid timeout: no response within "
+                    f"{GROBID_TOTAL_DEADLINE_SECONDS}s"
+                ),
+                status_code=504
+            )
+        except requests.exceptions.ConnectionError as e:
+            # the request never landed (sidecar restarting, not yet up), so
+            # nothing is in flight server-side and re-sending is safe
+            retryable_reason = f"{type(e).__name__}: {e}"
+        except requests.exceptions.RequestException as e:
+            raise PDFProcessingError(
+                message=f"grobid unavailable: {type(e).__name__}: {e}",
+                status_code=503
+            )
+        else:
+            # 503 from the sidecar means its handler pool is saturated — transient,
+            # worth a retry. Everything else it rejects (5xx from pdfalto, 4xx
+            # malformed input) is deterministic for this file: same bytes will fail
+            # the same way, so there is nothing to wait for.
+            if response.status_code == 503:
+                retryable_reason = f"sidecar busy: {response.text[:200]}"
+            elif response.status_code >= 400:
+                raise PDFProcessingError(
+                    message=f"grobid cannot process pdf: {response.status_code}: {response.text[:200]}",
+                    status_code=422
+                )
+            else:
+                return response
+
+        if attempt == GROBID_MAX_ATTEMPTS:
+            break
+
+        # full jitter: several workers hitting one saturated sidecar must not
+        # resynchronise and come back as a herd
+        delay = backoff_delay(attempt)
+        if (time.monotonic() - started) + delay >= GROBID_TOTAL_DEADLINE_SECONDS:
+            # no point sleeping into the deadline just to give up on the far side
+            retryable_reason = (
+                f"{retryable_reason}, and the "
+                f"{GROBID_TOTAL_DEADLINE_SECONDS}s budget is spent"
+            )
+            break
+
+        print(
+            f"grobid unavailable ({retryable_reason}); retrying in {delay:.1f}s "
+            f"(attempt {attempt}/{GROBID_MAX_ATTEMPTS})"
         )
-    if response.status_code >= 400:
-        raise PDFProcessingError(
-            message=f"grobid cannot process pdf: {response.status_code}: {response.text[:200]}",
-            status_code=422
-        )
-    return response
+        time.sleep(delay)
+
+    # Out of attempts. This is our capacity problem, not a bad document, so it
+    # keeps the transient code and the caller redelivers.
+    raise PDFProcessingError(
+        message=(
+            f"grobid unavailable: {retryable_reason} "
+            f"(after {GROBID_MAX_ATTEMPTS} attempts)"
+        ),
+        status_code=503
+    )
 
 
 def save_grobid_response_to_s3(xml_content, xml_uuid, pdf_url, native_id, native_id_namespace):

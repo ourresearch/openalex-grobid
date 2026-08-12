@@ -47,3 +47,5 @@ ENV/
 local_settings.py
 db.sqlite3
 test_*.py
+tests/
+requirements-dev.txt
