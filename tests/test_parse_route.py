@@ -239,21 +239,6 @@ def test_r2_transport_failures_are_retryable(client, storage, monkeypatch, targe
     assert "storage error" in response.get_json()["error"]
 
 
-def test_dynamodb_lookup_failure_is_retryable(client, storage, monkeypatch):
-    """The cache lookup runs before anything is known about the document, so a
-    failure there must not be reported as a document the caller should give up on."""
-    _, table = storage
-
-    def boom(**kwargs):
-        raise EndpointConnectionError(endpoint_url="https://dynamodb.example")
-
-    monkeypatch.setattr(table, "query", boom)
-    response = post_parse(client)
-
-    assert response.status_code == 503
-    assert "storage error" in response.get_json()["error"]
-
-
 def test_unexpected_errors_still_answer_json(client, storage, monkeypatch):
     """An unhandled exception used to render Flask's HTML error page, which
     callers stored verbatim as an opaque 500. Whatever breaks next should at
@@ -299,23 +284,24 @@ def test_missing_required_fields_returns_400(client):
     assert response.status_code == 400
 
 
-def test_cache_hit_short_circuits_grobid(client, monkeypatch):
-    import gzip
-    xml_uuid = "cached-uuid"
-    s3 = FakeS3({
-        (grobid.GROBID_XML_BUCKET, f"{xml_uuid}.xml.gz"): gzip.compress(TEI),
-    })
-    table = FakeTable([{"id": xml_uuid, "source_pdf_id": REQUEST["pdf_uuid"]}])
-    monkeypatch.setattr(grobid, "s3", s3)
-    monkeypatch.setattr(grobid, "dynamodb", FakeDynamo(table))
+def test_prior_parse_does_not_short_circuit(client, storage, monkeypatch):
+    """The DynamoDB cache-read was removed (oxjob #789 Stage 2): a pdf with a
+    prior parse on record must be parsed FRESH and persisted under a new uuid,
+    so re-queued PDFs pick up current-parser output."""
+    s3, table = storage
+    table.items = [{"id": "old-uuid", "source_pdf_id": REQUEST["pdf_uuid"]}]
 
     with FakeGrobid([{"status": 200, "body": TEI}]) as server:
         monkeypatch.setattr(grobid, "GROBID_URL", server.url)
         response = post_parse(client)
-        assert server.request_count == 0
+        assert server.request_count == 1, "must actually re-parse"
 
+    body = response.get_json()
     assert response.status_code == 201
-    assert response.get_json()["status"] == "success - cached response"
+    assert body["status"] == "success"
+    assert body["id"] != "old-uuid", "fresh parse must mint a new uuid"
+    assert len(s3.puts) == 1, "fresh xml must be persisted to R2"
+    assert len(table.put_items) == 1, "fresh parse must be recorded in DynamoDB"
 
 
 def test_bypass_cache_reparses_without_persisting(client, storage, monkeypatch):

@@ -9,7 +9,6 @@ import uuid
 import os
 
 import boto3
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import BotoCoreError, ClientError
 import requests
 
@@ -105,21 +104,12 @@ def grobid_pool_status():
 
 
 def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=False):
-    # bypass_cache: force a fresh parse, returned but NOT saved to S3/DynamoDB —
-    # for parser-version comparison runs; leaves all stored state untouched
-    # check if already parsed
-    previous_xml_uuid = None if bypass_cache else previous_parse(pdf_uuid)
-    if previous_xml_uuid:
-        # return cached xml
-        xml_content = get_xml_file_from_s3(previous_xml_uuid)
-        return {
-            "id": previous_xml_uuid,
-            "status": "success - cached response",
-            "source_pdf_id": pdf_uuid,
-            "s3_key": f"{previous_xml_uuid}.xml.gz",
-            "s3_path": f"s3://{GROBID_XML_BUCKET}/{previous_xml_uuid}.xml.gz",
-            "xml_content": xml_content.decode('utf-8')
-        }
+    # bypass_cache: fresh parse returned but NOT saved to S3/DynamoDB —
+    # for parser-version comparison runs; leaves all stored state untouched.
+    # Every persisted request parses fresh: the DynamoDB cache-read was removed
+    # (oxjob #789 Stage 2) so re-queued PDFs get current-parser output instead of
+    # a stale "success - cached response". Dedup lives upstream in the walden
+    # driver's anti-join; DynamoDB items remain as write-only parse lineage.
 
     # try to get the file from s3
     pdf_content = get_pdf_file_from_s3(pdf_uuid)
@@ -175,28 +165,6 @@ def parse_pdf(pdf_url, pdf_uuid, native_id, native_id_namespace, bypass_cache=Fa
         "s3_path": f"s3://{GROBID_XML_BUCKET}/{xml_uuid}.xml.gz",
         "xml_content": xml_content
     }
-
-
-def previous_parse(pdf_uuid):
-    # check if the pdf has already been parsed by seeing if the source_pdf_key exists in the grobid-xml table
-    table = dynamodb.Table("grobid-xml")
-    try:
-        response = table.query(
-            IndexName="by_source_pdf_id",
-            KeyConditionExpression=Key("source_pdf_id").eq(pdf_uuid)
-        )
-    except (ClientError, BotoCoreError) as e:
-        # a failed cache lookup says nothing about the document, so it must not
-        # read as one that cannot be parsed
-        raise PDFProcessingError(
-            message=f"storage error: dynamodb query failed: {e}",
-            status_code=503
-        )
-
-    # return the xml uuid if it exists
-    if response["Items"]:
-        return response["Items"][0]["id"]
-    return None
 
 
 def get_pdf_file_from_s3(pdf_uuid):
